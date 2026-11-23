@@ -1,71 +1,80 @@
-# YouTube Speech-to-Text Data Pipeline
+# YouTube Speech-to-Text & SQLite FTS5 Data Pipeline
 
-An automated, end-to-end speech-to-text data pipeline leveraging `yt-dlp`, `FFmpeg`, and OpenAI Whisper. Designed for robust audio stream extraction, signal normalization, and structured transcript generation suitable for downstream NLP tasks and database storage.
+Modular Python ETL pipeline that extracts mono `16 kHz` audio from YouTube URLs via `yt-dlp`, transcribes timestamped segments with **OpenAI Whisper**, exports structured **JSON** and **SRT** captions, and indexes utterances into a local **SQLite** database with **FTS5 full-text search**. Includes an offline `--sample-demo` mode and deterministic `unittest` coverage.
 
----
+## Pipeline Architecture
 
-## 🏗️ System Architecture
-
-```mermaid
-graph TD
-    A[YouTube Video URL] -->|yt-dlp| B[Audio Stream .m4a / .wav]
-    B -->|FFmpeg Preprocessing| C[Audio Normalization 16kHz Mono]
-    C -->|OpenAI Whisper Engine| D[ASR Speech Recognition]
-    D -->|Post-Processing| E[Timestamp & Segment Structuring]
-    E -->|JSON Exporter| F[Structured JSON Output]
-    E -->|DB Writer| G[(SQL Database / Data Lake)]
+```text
++-------------------+     yt-dlp + ffmpeg      +------------------------+
+|  YouTube Video ID | =======================> | 16 kHz Mono WAV Stream |
++-------------------+   URL Validation         +-----------+------------+
+                                                           |
+                                                           v
++-------------------+   Idempotent Upsert      +------------------------+
+| SQLite + FTS5 DB  | <======================= |  Whisper ASR & Metrics |
+| (videos/segments) |   + JSON & SRT Exports   | (WPM, Confidence Filter)|
++-------------------+                          +------------------------+
 ```
 
----
+## Repository Structure
 
-## ⚙️ Setup & Installation Guide
-
-### System Dependencies (Linux)
-```bash
-sudo apt update
-sudo apt install -y ffmpeg python3-pip python3-venv git
+```text
+youtube-whisper-pipeline/
+├── .gitignore                  # Excludes downloaded audio, outputs/, and SQLite DBs
+├── LICENSE                     # MIT License
+├── main.py                     # CLI entrypoint (ingest, --sample-demo, --search)
+├── requirements.txt            # Pinned yt-dlp and openai-whisper dependencies
+├── src/
+│   ├── __init__.py
+│   ├── extractor.py            # Strict YouTube ID parser & yt-dlp audio extractor
+│   ├── storage.py              # SQLite relational schema, FTS5 index, JSON/SRT writers
+│   └── transcriber.py          # Whisper model runner, SRT timestamps, and WPM metrics
+└── tests/
+    └── test_pipeline.py        # End-to-end ETL & SQLite FTS5 unit tests (zero cloud calls)
 ```
 
-### Environment Setup
+## Storage Schema (SQLite 3 + FTS5)
+
+Each ingested video is normalized across two relational tables and one virtual full-text index:
+
+| Table / Virtual Index | Primary Key / Type | Purpose |
+|---|---|---|
+| `videos` | `video_id TEXT PRIMARY KEY` | Stores title, source URL, model name, total duration, word count, and speaking rate (`words_per_minute`) |
+| `transcript_segments` | `(video_id, segment_idx)` | Stores `start_sec`, `end_sec`, normalized `text`, and `confidence_score` |
+| `segments_fts` | `FTS5 Virtual Table` | Enables sub-millisecond keyword lookup returning exact video timestamps |
+
+## Local Verification & Usage
+
+### 1. Run Automated Unit Tests (No GPU, Network, or Extra Packages Required)
+
 ```bash
-# Clone repository
-git clone [https://github.com/Dmitrizakanilov279/youtube-whisper-pipeline.git](https://github.com/Dmitrizakanilov279/youtube-whisper-pipeline.git)
+git clone https://github.com/benjarong-dev/youtube-whisper-pipeline.git
 cd youtube-whisper-pipeline
 
-# Create and activate virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install --upgrade pip
-pip install -r requirements.txt
+python3 -m unittest discover -s tests -v
 ```
 
----
+### 2. Run Offline End-to-End ETL & Full-Text Search Demo
 
-## 💻 Execution & Sample Output
-
-### Command Execution
 ```bash
-python main.py --url "[https://www.youtube.com/watch?v=EXAMPLE_ID](https://www.youtube.com/watch?v=EXAMPLE_ID)" --model "medium" --output_dir "./outputs"
+# Ingests a deterministic sample lecture into outputs/transcripts.db, JSON, and SRT
+python3 main.py --sample-demo --output-dir ./outputs
+
+# Query the SQLite FTS5 index for exact spoken timestamps
+python3 main.py --output-dir ./outputs --search "vlan"
 ```
 
-### Sample Output Schema (`outputs/transcript.json`)
-```json
-{
-  "metadata": {
-    "video_id": "EXAMPLE_ID",
-    "duration_seconds": 312.5,
-    "model_used": "medium",
-    "processed_at": "2026-10-31T08:00:00Z"
-  },
-  "segments": [
-    {
-      "id": 1,
-      "start": 0.00,
-      "end": 4.20,
-      "text": "Welcome to the systems and infrastructure architecture overview."
-    }
-  ]
-}
+### 3. Transcribe a Live YouTube URL (Requires ffmpeg & Whisper Dependencies)
+
+```bash
+sudo apt install -y ffmpeg
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+python3 main.py --url "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --model "base" --output-dir ./outputs
 ```
+
+## License
+
+Distributed under the MIT License. See `LICENSE` for details.
